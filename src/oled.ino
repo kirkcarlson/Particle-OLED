@@ -5,94 +5,7 @@
  * Date: 8 Aug 2018
  */
 
-/*
-Oled 2...
-  want to phase in a few changes:
-    1/ experiment with turning off Particle.io stuff
-     / -- add a button for semi automatic or manual operation
-    2/ objectify the slots
-    3/ objectify the buttons
-    4 try to use the u8g2 driver instead of Adafruit
-    5 add in code for communication status
-      - no serial
-      - no wifi
-      - wifi connected and local IP address
-      - wifi broken and attempting reconnect
-      - no MQTT broker
-      - MQTT broker connect broken, attempting reconnect
-      - no external internet
-    6 want to be able to assign slot to local functions
-      connection status
-      time
-      ip address
-
-      either:
-        assign slot to function (including MQTT)
-        **this is easier because it fits into the rest of it
-      or:
-        assign function to slot
-
-    7/ serial logging needs to be a bit more consistant
-     / - always include time of event to seconds
-     / - always start with Capital letter
-     / - expiring time should include seconds
-     / - strings should be enclosed in quotes
-
-    8  local time is wrong
-
-
-
-
-Basically want the following displayed:
-
-status
-  Booting
-  Connected
-  Disconnected
-  Fault
-
-Phase 1:
-  print subscribed messages
-    need to assume preformated strings
-    need a caption and a value
-      e.g.: Cola T: 98F
-    position? x,y
-    size?
-    inverted?
-  how complicated of a message can we handle?
-  publish button messages /
-  publish change of states
-    a heartbeat would be sufficient
-  publish a heartbeat
-    every (10?) minutes
-  timestamp published messages
-
-  divide display into slots
-     slot1 - slot4 small text slots
-     slot5 - slot7 larger text slots
-     slot5 overlaps slot1 and slot2
-     slot6 overlaps slot2 and slot3
-     slot7 overlaps slot3 and slot4
-     config to invert individual slots
-     config to set time to live on a particular slot
-
-Phase 2:
-  add some user controls
-    review subscriptions
-    select subscriptions or autoscroll
-
-
-
-
 /*********************************************************************
-This is an example for our Monochrome OLEDs based on SSD1306 drivers
-
-  Pick one up today in the adafruit shop!
-  ------> http://www.adafruit.com/category/63_98
-
-This example is for a 128x64 size display using I2C to communicate
-3 pins are required to interface (2 I2C and one reset)
-
 Adafruit invests time and resources providing this open source code,
 please support Adafruit and open-source hardware by purchasing
 products from Adafruit!
@@ -100,11 +13,7 @@ products from Adafruit!
 Written by Limor Fried/Ladyada for Adafruit Industries.
 BSD license, check license.txt for more information
 All text above, and the splash screen must be included in any redistribution
-*********************************************************************
-
-void callback(char* topic, byte* payload, unsigned int length);
-*/
-
+*********************************************************************/
 
 // *** INCLUDES ***
 
@@ -116,23 +25,24 @@ void callback(char* topic, byte* payload, unsigned int length);
 #include "FreeSans12pt7b.h"
 #include "FreeSans18pt7b.h"
 #include "FreeSans24pt7b.h"
+#include "addresses.h"
 
+# check that the source code has been modified
 #if (SSD1306_LCDHEIGHT != 32)
 #error("Height incorrect, please fix Adafruit_SSD1306.h!");
 #endif
 
-
+ 
 // *** HARDWARE DEFINES ***
-// D0 -- SDA
-// D1 --SCL
-#define OLED_RESET D5
-#define BUTTON_MANUAL D6
-
+// SDA			D0
+// SCL			D1
+#define BUTTON_A	D2
+#define BUTTON_B	D3
+#define BUTTON_C	D4
+#define OLED_RESET	D5
+#define BUTTON_MANUAL	D6
 
 // *** CONSTANTS ***
-//HOSTNAME is the name of the current microcontroller on the WiFi network
-#define HOSTNAME "oled1"
-
 #define ON 1
 #define OFF 0
 #define MAX_PAYLOAD_SIZE 100
@@ -161,16 +71,6 @@ bool payloadChanged; // new payload
 // *** INTERFACE OBJECTS ***
 
 NtpTime ntptime;
-
-/**
- * if want to use IP address:
- *   byte server[] = { XXX,XXX,XXX,XXX };
- *   MQTT client(server, 1882, callback);
- * want to use domain name:
- *   MQTT client("iot.eclipse.org", 1882, callback);
- **/
-
-byte server[] = { 192,168,4,1 };
 //MQTT client( server, 1883, callback);
 //need initialization verions that include keep alive timer values
 MQTT client( server, 1883, KEEP_ALIVE, callback);
@@ -183,7 +83,7 @@ Adafruit_SSD1306 display(OLED_RESET);
 class Button {
     public:
         int8_t state = OFF;
-        int8_t pin = D2;
+        int8_t pin = BUTTON_A;
         char* name = "A";
 
         Button ( int8_t buttonPin, char* buttonName) {
@@ -219,41 +119,6 @@ class Button {
         }
 };
 
-/*
-need to know how to handle fonts
-don't really want to pass name
-  have extra flexibility possibility: normal, bold, italics, bold italics
-  different famililies: monospaced, sans serif, serif
-
-could just use a simple index, but for a family of devices, this matrix may
-be sparse as some fonts are included and some are not.
-
-The default font can be used with a magnification 1, 2, 4...
-
-display.setFont(&FreeSans9pt7b);
-display.setFont(&FreeSans12pt7b);
-display.setFont(&FreeSans18pt7b);
-display.setFont(&FreeSans24pt7b);
-
-for 32x128 display:
-
-basic 9pt baselines would be at 8, 18, and 28.
-basic 12pt baselines could be 24 + 9 = 33... 12, 24, 31
-18 + 12 = 30
-18 + 9 = 27
-in other words there is too much flexible to make the positioning generic
-
-
-need a way to send:
-  font family
-  font style
-  font size
-  font x
-  font y
-
-if family, style or size not available, use default
-
-*/
 
 
 class Slot {
@@ -317,10 +182,10 @@ class Slot {
 // *** LOCAL OBJECTS ***
 
 // define button objects
-//            (pin, "name"
-Button buttonA (D2, "buttonA");
-Button buttonB (D3, "buttonB");
-Button buttonC (D4, "buttonC");
+//            (pin, "name")
+Button buttonA (BUTTON_A, "buttonA");
+Button buttonB (BUTTON_B, "buttonB");
+Button buttonC (BUTTON_C, "buttonC");
 
 
 // define slot objects
@@ -374,6 +239,21 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
     log( String( "Received message topic: \"" + topicS + "\" payload: \"" + payloadS + "\""));
 
+/*
+want to have a switch case statement here to handle various options
+node/slot1	payload = text
+node/slot2	payload = text
+node/slot3	payload = text
+node/slot4	payload = text
+node/slot5	payload = text
+node/slot6	payload = text
+node/slot7	payload = text
+node/time	payload = slot number
+node/IP		payload = slot number
+node/connect	payload = slot number
+node/config/slot	payload = non-inverted/inverted, font size
+
+*/
     // update the slot according to the received topic with the received payload
     slot1.updateSlot( topicS, payloadS, currentTime);
     slot2.updateSlot( topicS, payloadS, currentTime);
