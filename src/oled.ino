@@ -61,10 +61,12 @@ All text above, and the splash screen must be included in any redistribution
 #define SOURCE_TIME 1
 #define SOURCE_IP 2
 #define SOURCE_STATUS 3
+#define SOURCE_PING 4
 
 #define COLOR_NORMAL 0
 #define COLOR_INVERSE 1
 
+byte google [] = { 8,8,8,8 };
 
 
 // *** GLOBALS ***
@@ -78,6 +80,7 @@ char stringBuffer[ MAX_STRING_SIZE + 1];
 unsigned long  currentTime = 0;
 unsigned long  heartBeatDue = 0;
 unsigned long  timeUpdateDue = 0;
+int8_t pingCount = 0;
 bool displayNeedsUpdating = false;
 
 // *** INTERFACE OBJECTS ***
@@ -172,7 +175,7 @@ class Slot {
 
 
         void displaySlot( ) {
-            String localIP;
+            String scratch;
 
             display.setTextSize( size);
             display.setCursor( x, y);
@@ -188,16 +191,20 @@ class Slot {
                 hhmmss(ntptime.now()).toCharArray( stringBuffer, MAX_STRING_SIZE);
                 break;
             case SOURCE_IP:
-                localIP = String (WiFi.localIP());
+                scratch = String (WiFi.localIP());
                 //String (localIP[0] + "." + localIP[1] + "." + localIP[2] + "." +
                 //    localIP[3]).toCharArray( stringBuffer, MAX_STRING_SIZE);
-                localIP.toCharArray( stringBuffer, MAX_STRING_SIZE);
+                scratch.toCharArray( stringBuffer, MAX_STRING_SIZE);
                 break;
             case SOURCE_STATUS:
                 status.toCharArray( stringBuffer, MAX_STRING_SIZE);
                 break;
             case SOURCE_MQTT:
                 text.toCharArray( stringBuffer, MAX_STRING_SIZE);
+                break;
+            case SOURCE_PING:
+                scratch = String( "Ping: ") + String( pingCount);
+                scratch.toCharArray( stringBuffer, MAX_STRING_SIZE);
                 break;
             default:
                 text.toCharArray( stringBuffer, MAX_STRING_SIZE);
@@ -369,6 +376,8 @@ node/normSlot	payload = textual slot number
         setSlot( payloadS.toInt(), SOURCE_STATUS);
     } else if (topicS.compareTo( String( HOSTNAME) + String( "/mqttSlot")) == 0) {
         setSlot( payloadS.toInt(), SOURCE_MQTT);
+    } else if (topicS.compareTo( String( HOSTNAME) + String( "/pingSlot")) == 0) {
+        setSlot( payloadS.toInt(), SOURCE_PING);
     } else if (topicS.compareTo( String( HOSTNAME) + String( "/invSlot")) == 0) {
         colorSlot( payloadS.toInt(), COLOR_INVERSE);
     } else if (topicS.compareTo( String( HOSTNAME) + String( "/normSlot")) == 0) {
@@ -519,7 +528,7 @@ void setup() {
 
     // initialize local slot control
     setSlot(1, SOURCE_STATUS);
-    setSlot(2, SOURCE_MQTT);
+    setSlot(2, SOURCE_PING);
     setSlot(3, SOURCE_IP);
     setSlot(4, SOURCE_TIME);
     timeUpdateDue = millis(); // OK to be due out of the gate
@@ -542,6 +551,7 @@ void loop() {
     //WiFi.useDynamicIP();
     WiFi.connect();
     sendHeartbeat();
+    pingCount = WiFi.ping( google ); //hopefully this will time out eventually
   }
   status = "WiFi up";
   if (digitalRead (BUTTON_MANUAL) == LOW) {
@@ -569,6 +579,7 @@ void loop() {
     // check heartbeat due
     if (millis() > heartBeatDue) {
       sendHeartbeat();
+      pingCount = WiFi.ping( google ); //hopefully this will time out eventually
       heartBeatDue = millis() + HEARTBEAT_PERIOD;
     }
 
@@ -602,6 +613,7 @@ void loop() {
         subscribe( String ( HOSTNAME) + String( "/ipSlot"));
         subscribe( String ( HOSTNAME) + String( "/statSlot"));
         subscribe( String ( HOSTNAME) + String( "/mqttSlot"));
+        subscribe( String ( HOSTNAME) + String( "/pingSlot"));
         subscribe( String ( HOSTNAME) + String( "/invSlot"));
         subscribe( String ( HOSTNAME) + String( "/normSlot"));
     }
