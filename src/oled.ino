@@ -1,8 +1,8 @@
 /*
  * Project oled
- * Description:  control an OLED display for generalized MQTT data
+ * Description:  control an OLED display with generalized MQTT data
  * Author: Kirk Carlson
- * Date: 8 Aug 2018
+ * Date: 8 Aug 2018- 2019
  */
 
 /*********************************************************************
@@ -21,19 +21,20 @@ All text above, and the splash screen must be included in any redistribution
 #include <NtpTime.h>
 #include "Adafruit_SSD1306.h"
 #include "Adafruit_GFX.h"
-#include "FreeSans9pt7b.h"
-#include "FreeSans12pt7b.h"
-#include "FreeSans18pt7b.h"
-#include "FreeSans24pt7b.h"
+//#include "FreeSans9pt7b.h"
+//#include "FreeSans12pt7b.h"
+//#include "FreeSans18pt7b.h"
+//#include "FreeSans24pt7b.h"
 #include "addresses.h"
 
-# check that the source code has been modified
+// check that the source code has been modified
 #if (SSD1306_LCDHEIGHT != 32)
 #error("Height incorrect, please fix Adafruit_SSD1306.h!");
 #endif
 
  
 // *** HARDWARE DEFINES ***
+#define SSD1306_I2C_ADDRESS	0x3C
 // SDA			D0
 // SCL			D1
 #define BUTTON_A	D2
@@ -55,18 +56,27 @@ All text above, and the splash screen must be included in any redistribution
 #define MAX_TOPIC_LENGTH 30
 #define MAX_STRING_SIZE 32
 
+#define SOURCE_MQTT 0
+#define SOURCE_TIME 1
+#define SOURCE_IP 2
+#define SOURCE_STATUS 3
+
+#define COLOR_NORMAL 0
+#define COLOR_INVERSE 1
+
+
 
 // *** GLOBALS ***
-// yes this is bad, three globals. Just to save memory
+// yes this is bad, a few globals. Just to save memory
 // there are used only as temporary variables within functions
 // but they are common
 String topic;
 char loopTopic[ MAX_TOPIC_LENGTH + 1];
+String status;
 char stringBuffer[ MAX_STRING_SIZE + 1];
 unsigned long  currentTime = 0;
 unsigned long  heartBeatDue = 0;
 bool payloadChanged; // new payload
-
 
 // *** INTERFACE OBJECTS ***
 
@@ -75,7 +85,8 @@ NtpTime ntptime;
 //need initialization verions that include keep alive timer values
 MQTT client( server, 1883, KEEP_ALIVE, callback);
 
-Adafruit_SSD1306 display(OLED_RESET);
+//Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire, OLED_RESET);
+Adafruit_SSD1306 display (OLED_RESET);
 
 
 //  *** CLASSES ***
@@ -84,15 +95,17 @@ class Button {
     public:
         int8_t state = OFF;
         int8_t pin = BUTTON_A;
-        char* name = "A";
+        String name = "A";
 
-        Button ( int8_t buttonPin, char* buttonName) {
+        Button ( int8_t buttonPin, String buttonName) {
           pin = buttonPin;
           name = buttonName;
           pinMode (pin, INPUT_PULLUP);
         }
 
         void checkButton() {
+            String topic;
+
             if (digitalRead( pin) == LOW) {
                 if (state == OFF) {
                     delay(20); // wait to debounce button
@@ -120,20 +133,21 @@ class Button {
 };
 
 
-
 class Slot {
     public:
-        char* name = "";
+        String name = "";
         String topic = "";
         String text = "";
         unsigned long expiry = NO_EXPIRATION;
-        int8_t x = 0; // coordinates of slot on oled device
+        int8_t x = 0; // coordinates of slot baseline on OLED device
         int8_t y = 0;
         int8_t size = 1;
+        int8_t color = COLOR_NORMAL;
+        int8_t source = SOURCE_MQTT;
         int i;
         int len;
 
-        Slot( char* slotName, int8_t slotX, int8_t slotY, int8_t slotSize) {
+        Slot( String slotName, int8_t slotX, int8_t slotY, int8_t slotSize) {
            name = slotName;
            topic = String( HOSTNAME) + String ("/") + String( name) + String( "/value");
            x = slotX;
@@ -142,37 +156,79 @@ class Slot {
         };
 
         void updateSlot( String topicReceived, String payloadReceived, unsigned long now) {
-	    if (topicReceived.compareTo( topic ) == 0) {
-          if (payloadReceived.length() > 0) {
-    	        text = payloadReceived;
-	            log( String( "Set ") + name + String( " to: \"") + text + String ("\""));
-	            expiry = now + SLOT_EXPIRY;
-	            log( String( "Expiry set for ") + String( name) + String(" at ") + String( Time.format(expiry, "%I:%M:%S%p")));
-          } else {
-              text = "";
-	            expiry = NO_EXPIRATION;
-	            log( String( "Set ") + name + String( " to: None"));
-          }
-	    }
-         };
+            if (topicReceived.compareTo( topic ) == 0) {
+                if (payloadReceived.length() > 0) {
+                    text = payloadReceived;
+                    log( String( "Set ") + name + String( " to: \"") + text + String ("\""));
+                    expiry = now + SLOT_EXPIRY;
+                    log( String( "Expiry set for ") + String( name) + String(" at ") + String( Time.format(expiry, "%I:%M:%S%p")));
+                } else {
+                    text = "";
+                    expiry = NO_EXPIRATION;
+                    log( String( "Set ") + name + String( " to: None"));
+                }
+            }
+        };
 
 
-        bool displaySlot( ) {
-	    display.setTextSize( size);
-	    display.setCursor( x, y);
-	    text.toCharArray( stringBuffer, MAX_STRING_SIZE);
-	    display.print( stringBuffer);
-	    log( String( "Updating ") + name + String(": \"") + String(stringBuffer) + String( "\""));
+        void updateSlot2( String slotString) {
+            if (slotString.length() > 0) {
+                text = slotString;
+                log( String( "Set ") + name + String( " to: \"") + slotString + String ("\""));
+                expiry = currentTime + SLOT_EXPIRY;
+                log( String( "Expiry set for ") + String( name) + String(" at ") + String( Time.format(expiry, "%I:%M:%S%p")));
+            } else {
+                text = "";
+                expiry = NO_EXPIRATION;
+                log( String( "Set ") + name + String( " to: None"));
+            }
+        };
+
+
+        void displaySlot( ) {
+            String localIP;
+
+            display.setTextSize( size);
+            display.setCursor( x, y);
+            if (color == 0) {
+                display.invertDisplay(false);
+                display.setTextColor(WHITE);
+            } else {
+                display.invertDisplay(true);
+                display.setTextColor(BLACK);
+            }
+            switch (source) {
+            case SOURCE_TIME:
+                hhmmss(ntptime.now()).toCharArray( stringBuffer, MAX_STRING_SIZE);
+                break;
+            case SOURCE_IP:
+                localIP = String (WiFi.localIP());
+                //String (localIP[0] + "." + localIP[1] + "." + localIP[2] + "." +
+                //    localIP[3]).toCharArray( stringBuffer, MAX_STRING_SIZE);
+                localIP.toCharArray( stringBuffer, MAX_STRING_SIZE);
+                break;
+            case SOURCE_STATUS:
+                status.toCharArray( stringBuffer, MAX_STRING_SIZE);
+                break;
+            case SOURCE_MQTT:
+                text.toCharArray( stringBuffer, MAX_STRING_SIZE);
+                break;
+            default:
+                text.toCharArray( stringBuffer, MAX_STRING_SIZE);
+                break;
+            }
+            display.print( stringBuffer);
+            log( String( "Updating ") + name + String(": \"") + String(stringBuffer) + String( "\""));
         };
 
         bool checkSlotExpiration( unsigned long now) {
             // returns true if display needs updating
-	    if ( expiry != NO_EXPIRATION && now > expiry) {
-	        text = "";
+            if ( expiry != NO_EXPIRATION && now > expiry) {
+                text = "";
                 log( String("Expiring: ") + name);
-	        expiry = NO_EXPIRATION;
-	        return true;
-	    } else {
+                expiry = NO_EXPIRATION;
+                return true;
+            } else {
                 return false;
             }
         };
@@ -217,6 +273,66 @@ String hhmmss(unsigned long int now)  //format value as "hh:mm:ss"
    return hour + ":" + minute + ":" + second;
 };
 
+void setSlot( int8_t slotNumber, int8_t source )
+//set the source for a given slotNumber
+{
+    switch (slotNumber) {
+    case 1:
+        slot1.source = source;
+        break;
+    case 2:
+        slot2.source = source;
+        break;
+    case 3:
+        slot3.source = source;
+        break;
+    case 4:
+        slot4.source = source;
+        break;
+    case 5:
+        slot5.source = source;
+        break;
+    case 6:
+        slot6.source = source;
+        break;
+    case 7:
+        slot7.source = source;
+        break;
+    default:
+        break;
+    }
+}
+
+void colorSlot( int8_t slotNumber, int8_t color )
+//set the color (normal, inverse) for a given slotNumber
+{
+    switch (slotNumber) {
+    case 1:
+        slot1.color = color;
+        break;
+    case 2:
+        slot2.color = color;
+        break;
+    case 3:
+        slot3.color = color;
+        break;
+    case 4:
+        slot4.color = color;
+        break;
+    case 5:
+        slot5.color = color;
+        break;
+    case 6:
+        slot6.color = color;
+        break;
+    case 7:
+        slot7.color = color;
+        break;
+    default:
+        break;
+    }
+}
+
 
 // for QoS2 MQTTPUBREL message.
 // this messageid maybe have store list or array structure.
@@ -231,7 +347,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
       length = MAX_PAYLOAD_SIZE;
     }
     memcpy(lastPayload, payload, length);
-    lastPayload[length] = NULL;
+    lastPayload[length] = '\0';
     currentTime = Time.now();
     String topicS = String( (const char*) topic);
     String payloadS = String( (const char*) lastPayload);
@@ -241,20 +357,24 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 /*
 want to have a switch case statement here to handle various options
-node/slot1	payload = text
-node/slot2	payload = text
-node/slot3	payload = text
-node/slot4	payload = text
-node/slot5	payload = text
-node/slot6	payload = text
-node/slot7	payload = text
-node/time	payload = slot number
-node/IP		payload = slot number
-node/connect	payload = slot number
-node/config/slot	payload = non-inverted/inverted, font size
+node/slot1/value	payload = text
+node/slot2/value	payload = text
+node/slot3/value	payload = text
+node/slot4/value	payload = text
+node/slot5/value	payload = text
+node/slot6/value	payload = text
+node/slot7/value	payload = text
+node/timeSlot	payload = textual slot number
+node/ipSlot	payload = textual slot number
+node/statSlot	payload = textual slot number
+node/mqttSlot	payload = textual slot number
+node/invSlot	payload = textual slot number
+node/normSlot	payload = textual slot number
 
 */
     // update the slot according to the received topic with the received payload
+
+/*
     slot1.updateSlot( topicS, payloadS, currentTime);
     slot2.updateSlot( topicS, payloadS, currentTime);
     slot3.updateSlot( topicS, payloadS, currentTime);
@@ -262,6 +382,35 @@ node/config/slot	payload = non-inverted/inverted, font size
     slot5.updateSlot( topicS, payloadS, currentTime);
     slot6.updateSlot( topicS, payloadS, currentTime);
     slot7.updateSlot( topicS, payloadS, currentTime);
+*/
+
+    if (topicS.compareTo( String( HOSTNAME) + String( "/timeSlot")) == 0) {
+        setSlot( payloadS.toInt(), SOURCE_TIME);
+    } else if (topicS.compareTo( String( HOSTNAME) + String( "/ipSlot")) == 0) {
+        setSlot( payloadS.toInt(), SOURCE_IP);
+    } else if (topicS.compareTo( String( HOSTNAME) + String( "/statSlot")) == 0) {
+        setSlot( payloadS.toInt(), SOURCE_STATUS);
+    } else if (topicS.compareTo( String( HOSTNAME) + String( "/mqttSlot")) == 0) {
+        setSlot( payloadS.toInt(), SOURCE_MQTT);
+    } else if (topicS.compareTo( String( HOSTNAME) + String( "/invSlot")) == 0) {
+        colorSlot( payloadS.toInt(), COLOR_INVERSE);
+    } else if (topicS.compareTo( String( HOSTNAME) + String( "/normSlot")) == 0) {
+        colorSlot( payloadS.toInt(), COLOR_NORMAL);
+    } else if (topicS.compareTo( slot1.topic) == 0) {
+        slot1.updateSlot2( payloadS);
+    } else if (topicS.compareTo( slot2.topic) == 0) {
+        slot2.updateSlot2( payloadS);
+    } else if (topicS.compareTo( slot3.topic) == 0) {
+        slot3.updateSlot2( payloadS);
+    } else if (topicS.compareTo( slot4.topic) == 0) {
+        slot4.updateSlot2( payloadS);
+    } else if (topicS.compareTo( slot5.topic) == 0) {
+        slot5.updateSlot2( payloadS);
+    } else if (topicS.compareTo( slot6.topic) == 0) {
+        slot6.updateSlot2( payloadS);
+    } else if (topicS.compareTo( slot7.topic) == 0) {
+        slot7.updateSlot2( payloadS);
+    }
 }
 
 
@@ -277,44 +426,38 @@ void qoscallback(unsigned int messageid) {
 }
 
 
-void log( String charArray) {
-    // send the str to the serial output, if enabled
-    Serial.println( hhmmss(ntptime.now()) + String(" ") + charArray);
+void log( String message) {
+    // send the message to the serial output, if enabled
+    Serial.println( hhmmss(ntptime.now()) + String(": ") + message);
 }
 
 
 void updateDisplay() {
     // control the display here
-    // slots are filled by subscribe call backs
-    // also need the general status/startup information
-          // status/startup may be elsewhere because this should be in the loop
+    // slots are filled by subscribe call backs or local status data
 
     display.clearDisplay(); // clear whatever is there.
-    display.setTextColor(WHITE);
-
-    display.invertDisplay(false);
-    display.setTextColor(WHITE);
 
     if (slot5.text.length() >0) {
-         slot5.displaySlot( );
+        slot5.displaySlot( );
     }
     if (slot6.text.length() >0) {
-         slot6.displaySlot( );
+        slot6.displaySlot( );
     }
     if (slot7.text.length() >0) {
-         slot7.displaySlot( );
+        slot7.displaySlot( );
     }
     if (slot5.text.length() == 0 && slot1.text.length() >0) {
-         slot1.displaySlot( );
+        slot1.displaySlot( );
     }
     if (slot5.text.length() == 0 && slot6.text.length() == 0 && slot2.text.length() >0) {
-         slot2.displaySlot( );
+        slot2.displaySlot( );
     }
     if (slot6.text.length() == 0 && slot7.text.length() == 0 && slot3.text.length() >0) {
-         slot3.displaySlot( );
+        slot3.displaySlot( );
     }
     if (slot7.text.length() == 0 && slot4.text.length() >0) {
-         slot4.displaySlot( );
+        slot4.displaySlot( );
     }
 
     display.display();
@@ -327,30 +470,37 @@ void updateDST (unsigned long int now) {
   int weekday = Time.weekday(now);
   int hour = Time.hour(now);
 
-  // daylight savings betwee
+  // daylight savings between
   //second Sunday in March
   // Sunday between the 8th and 14th
   //first Sunday in November
   // Sunday between 1st and 7th
   Time.endDST(); //assume standard time
-  if ( ( month > 4) || \
-       ( month == 4 &&  day >= 15) || \
-       ( month == 4 && ( day >= 8 && day <= 14) && day - 7 > weekday) || \
-       ( month == 4 && ( day >= 8 && day <= 14) && weekday == 1 && hour > 2) \
+  if ( (
+         ( month > 4) || \
+         ( month == 3 &&  day >= 15) || \
+         ( month == 3 && ( day >= 8 && day <= 14) && day - 7 > weekday) || \
+         ( month == 3 && ( day >= 8 && day <= 14) && weekday == 1 && hour > 2) \
+       )
      && \
-       ( month < 11 ) || \
-       ( month == 11 && ( day < 7) ) || \
-       ( month == 11 && ( day <= 7) && day > weekday ) || \
-       ( month == 11 && ( day <= 7) && (weekday == 1) && hour < 2) ) {
+       (
+         ( month < 11 ) || \
+         ( month == 11 && ( day < 7) ) || \
+         ( month == 11 && ( day <= 7) && day > weekday ) || \
+         ( month == 11 && ( day <= 7) && (weekday == 1) && hour < 2)
+       )
+    ) {
     Time.beginDST ();
   }
 }
 
 void sendHeartbeat() {
-      log( String( " Heart beat"));
-      topic = String( HOSTNAME) + String( "/heatbeat");
-      topic.toCharArray(loopTopic, MAX_TOPIC_LENGTH);
-      client.publish( loopTopic, hhmmss(ntptime.now())); // may just want to send epoch
+    String topic;
+
+    log( String( " Heart beat"));
+    topic = String( HOSTNAME) + String( "/heatbeat");
+    topic.toCharArray(loopTopic, MAX_TOPIC_LENGTH);
+    client.publish( loopTopic, hhmmss(ntptime.now())); // may just want to send epoch
 }
 
 
@@ -358,6 +508,7 @@ void sendHeartbeat() {
 SYSTEM_MODE(MANUAL);
 
 void setup() {
+    status = "Starting up";
     Serial.begin(9600);
     log("starting");
 
@@ -369,20 +520,41 @@ void setup() {
     pinMode (BUTTON_MANUAL, INPUT_PULLUP);
 
     // initialize display
+    //display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS, true, true);  // initialize with the I2C addr 0x3D (for the 128x64)
     display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS);  // initialize with the I2C addr 0x3D (for the 128x64)
+    display.display();
+    delay(1000);
     display.clearDisplay();
+    display.display();
 
+
+    // initialize local slot control
+    setSlot(1, SOURCE_STATUS);
+    setSlot(2, SOURCE_MQTT);
+    setSlot(3, SOURCE_IP);
+    setSlot(4, SOURCE_TIME);
+}
+
+
+void subscribe (String topic) {
+#define TOPIC_LEN 30
+        char subscribeTopic[TOPIC_LEN];
+
+        topic.toCharArray(subscribeTopic, TOPIC_LEN);
+        client.subscribe( subscribeTopic);
 }
 
 
 void loop() {
   bool displayNeedsUpdating = false;
   if (!WiFi.ready()) {
+    status = "WiFi connecting";
     WiFi.on();
     //WiFi.useDynamicIP();
     WiFi.connect();
     sendHeartbeat();
   }
+  status = "WiFi up";
   if (digitalRead (BUTTON_MANUAL) == LOW) {
     Particle.connect();
   }
@@ -413,10 +585,7 @@ void loop() {
     buttonB.checkButton();
     buttonC.checkButton();
 
-    //display.println( yyyymmdd(ntptime.now()) + " " + \
-    //
-
-
+    // check update display
     if (payloadChanged | displayNeedsUpdating) {
       payloadChanged = false;
       log( String( "Updating display"));
@@ -424,19 +593,25 @@ void loop() {
     }
 
     if (client.isConnected()) { // check on MQTT connection
+        status = "MQTT up";
         client.loop();  // logically this is where callback and qoscallback are invoked
     } else {
         // connect to the server
+        status = "MQTT connecting";
         log( String( " Attempting to connect to MQTT broker again"));
         client.connect(HOSTNAME);
         delay(1000);
 
         // subscribe to all slot values at once with wild card
-        String topic = String( HOSTNAME) + String( "/+/value");
-#define TOPIC_LEN 30
-        char subscribeTopic[TOPIC_LEN];
+        subscribe( String ( HOSTNAME) + String( "/+/value"));
+        // subscribe to all messages addressed to node
+        //subscribe( String( HOSTNAME) + String( "/#"));
 
-        topic.toCharArray(subscribeTopic, TOPIC_LEN);
-        client.subscribe( subscribeTopic);
+        subscribe( String ( HOSTNAME) + String( "/timeSlot"));
+        subscribe( String ( HOSTNAME) + String( "/ipSlot"));
+        subscribe( String ( HOSTNAME) + String( "/statSlot"));
+        subscribe( String ( HOSTNAME) + String( "/mqttSlot"));
+        subscribe( String ( HOSTNAME) + String( "/invSlot"));
+        subscribe( String ( HOSTNAME) + String( "/normSlot"));
     }
 }
