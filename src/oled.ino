@@ -52,6 +52,7 @@ All text above, and the splash screen must be included in any redistribution
 // HEARTBEAT_PERIOD is in milliseconds
 #define HEARTBEAT_PERIOD 10*60*1000
 #define NO_EXPIRATION 0
+// KEEP_ALIVE is in seconds
 #define KEEP_ALIVE 60
 #define MAX_TOPIC_LENGTH 30
 #define MAX_STRING_SIZE 32
