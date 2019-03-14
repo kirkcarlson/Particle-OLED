@@ -76,7 +76,8 @@ String status;
 char stringBuffer[ MAX_STRING_SIZE + 1];
 unsigned long  currentTime = 0;
 unsigned long  heartBeatDue = 0;
-bool payloadChanged; // new payload
+unsigned long  timeUpdateDue = 0;
+bool displayNeedsUpdating = false;
 
 // *** INTERFACE OBJECTS ***
 
@@ -155,23 +156,7 @@ class Slot {
            size = slotSize;
         };
 
-        void updateSlot( String topicReceived, String payloadReceived, unsigned long now) {
-            if (topicReceived.compareTo( topic ) == 0) {
-                if (payloadReceived.length() > 0) {
-                    text = payloadReceived;
-                    log( String( "Set ") + name + String( " to: \"") + text + String ("\""));
-                    expiry = now + SLOT_EXPIRY;
-                    log( String( "Expiry set for ") + String( name) + String(" at ") + String( Time.format(expiry, "%I:%M:%S%p")));
-                } else {
-                    text = "";
-                    expiry = NO_EXPIRATION;
-                    log( String( "Set ") + name + String( " to: None"));
-                }
-            }
-        };
-
-
-        void updateSlot2( String slotString) {
+        void updateSlot( String slotString) {
             if (slotString.length() > 0) {
                 text = slotString;
                 log( String( "Set ") + name + String( " to: \"") + slotString + String ("\""));
@@ -351,7 +336,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     currentTime = Time.now();
     String topicS = String( (const char*) topic);
     String payloadS = String( (const char*) lastPayload);
-    payloadChanged = true;
+    displayNeedsUpdating = true;
 
     log( String( "Received message topic: \"" + topicS + "\" payload: \"" + payloadS + "\""));
 
@@ -374,15 +359,6 @@ node/normSlot	payload = textual slot number
 */
     // update the slot according to the received topic with the received payload
 
-/*
-    slot1.updateSlot( topicS, payloadS, currentTime);
-    slot2.updateSlot( topicS, payloadS, currentTime);
-    slot3.updateSlot( topicS, payloadS, currentTime);
-    slot4.updateSlot( topicS, payloadS, currentTime);
-    slot5.updateSlot( topicS, payloadS, currentTime);
-    slot6.updateSlot( topicS, payloadS, currentTime);
-    slot7.updateSlot( topicS, payloadS, currentTime);
-*/
 
     if (topicS.compareTo( String( HOSTNAME) + String( "/timeSlot")) == 0) {
         setSlot( payloadS.toInt(), SOURCE_TIME);
@@ -397,19 +373,19 @@ node/normSlot	payload = textual slot number
     } else if (topicS.compareTo( String( HOSTNAME) + String( "/normSlot")) == 0) {
         colorSlot( payloadS.toInt(), COLOR_NORMAL);
     } else if (topicS.compareTo( slot1.topic) == 0) {
-        slot1.updateSlot2( payloadS);
+        slot1.updateSlot( payloadS);
     } else if (topicS.compareTo( slot2.topic) == 0) {
-        slot2.updateSlot2( payloadS);
+        slot2.updateSlot( payloadS);
     } else if (topicS.compareTo( slot3.topic) == 0) {
-        slot3.updateSlot2( payloadS);
+        slot3.updateSlot( payloadS);
     } else if (topicS.compareTo( slot4.topic) == 0) {
-        slot4.updateSlot2( payloadS);
+        slot4.updateSlot( payloadS);
     } else if (topicS.compareTo( slot5.topic) == 0) {
-        slot5.updateSlot2( payloadS);
+        slot5.updateSlot( payloadS);
     } else if (topicS.compareTo( slot6.topic) == 0) {
-        slot6.updateSlot2( payloadS);
+        slot6.updateSlot( payloadS);
     } else if (topicS.compareTo( slot7.topic) == 0) {
-        slot7.updateSlot2( payloadS);
+        slot7.updateSlot( payloadS);
     }
 }
 
@@ -436,6 +412,7 @@ void updateDisplay() {
     // control the display here
     // slots are filled by subscribe call backs or local status data
 
+    log( String( "Updating display"));
     display.clearDisplay(); // clear whatever is there.
 
     if (slot5.text.length() >0) {
@@ -447,17 +424,27 @@ void updateDisplay() {
     if (slot7.text.length() >0) {
         slot7.displaySlot( );
     }
-    if (slot5.text.length() == 0 && slot1.text.length() >0) {
-        slot1.displaySlot( );
+    if (slot1.source != SOURCE_MQTT || (
+        slot5.text.length() == 0 &&
+        slot1.text.length() >0) ) {
+            slot1.displaySlot( );
     }
-    if (slot5.text.length() == 0 && slot6.text.length() == 0 && slot2.text.length() >0) {
-        slot2.displaySlot( );
+    if (slot2.source != SOURCE_MQTT || (
+        slot5.text.length() == 0 &&
+        slot6.text.length() == 0 &&
+        slot2.text.length() >0) ) {
+            slot2.displaySlot( );
     }
-    if (slot6.text.length() == 0 && slot7.text.length() == 0 && slot3.text.length() >0) {
-        slot3.displaySlot( );
+    if (slot3.source != SOURCE_MQTT || (
+        slot6.text.length() == 0 &&
+        slot7.text.length() == 0 &&
+        slot3.text.length() >0) ) {
+            slot3.displaySlot( );
     }
-    if (slot7.text.length() == 0 && slot4.text.length() >0) {
-        slot4.displaySlot( );
+    if (slot4.source != SOURCE_MQTT || (
+        slot7.text.length() == 0 &&
+        slot4.text.length() >0) ) {
+            slot4.displaySlot( );
     }
 
     display.display();
@@ -522,10 +509,11 @@ void setup() {
     // initialize display
     //display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS, true, true);  // initialize with the I2C addr 0x3D (for the 128x64)
     display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS);  // initialize with the I2C addr 0x3D (for the 128x64)
-    display.display();
+    display.display(); // Adafruit flash screen
     delay(1000);
     display.clearDisplay();
     display.display();
+    displayNeedsUpdating = false;
 
 
     // initialize local slot control
@@ -533,6 +521,7 @@ void setup() {
     setSlot(2, SOURCE_MQTT);
     setSlot(3, SOURCE_IP);
     setSlot(4, SOURCE_TIME);
+    timeUpdateDue = millis(); // OK to be due out of the gate
 }
 
 
@@ -546,7 +535,6 @@ void subscribe (String topic) {
 
 
 void loop() {
-  bool displayNeedsUpdating = false;
   if (!WiFi.ready()) {
     status = "WiFi connecting";
     WiFi.on();
@@ -562,11 +550,14 @@ void loop() {
     Particle.process();
   }
 
-
-    updateDST( ntptime.now());
+    if (millis() > timeUpdateDue) {
+        timeUpdateDue = timeUpdateDue + 1000; // don't accumulate error
+        updateDST( ntptime.now());
+        displayNeedsUpdating = true;
+    }
     currentTime = Time.now();
 
-    displayNeedsUpdating =  slot1.checkSlotExpiration( currentTime);
+    displayNeedsUpdating |= slot1.checkSlotExpiration( currentTime);
     displayNeedsUpdating |= slot2.checkSlotExpiration( currentTime);
     displayNeedsUpdating |= slot3.checkSlotExpiration( currentTime);
     displayNeedsUpdating |= slot4.checkSlotExpiration( currentTime);
@@ -586,9 +577,8 @@ void loop() {
     buttonC.checkButton();
 
     // check update display
-    if (payloadChanged | displayNeedsUpdating) {
-      payloadChanged = false;
-      log( String( "Updating display"));
+    if ( displayNeedsUpdating) {
+      displayNeedsUpdating = false;
       updateDisplay();
     }
 
