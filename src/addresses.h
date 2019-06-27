@@ -7,7 +7,7 @@
 
 // This file contains the addressed used by OLED
 
-#define HOSTNAME "oled1"
+#define NODE_NAME "oled1"
 
 /**
  * if want to use IP address:

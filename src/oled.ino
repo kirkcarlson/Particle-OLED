@@ -1,6 +1,6 @@
 /*
  * Project oled
- * Description:  control an OLED display with generalized MQTT data
+ * Description:  control an OLED display with generalized MQTT messages
  * Author: Kirk Carlson
  * Date: 8 Aug 2018- 2019
  */
@@ -25,6 +25,7 @@ All text above, and the splash screen must be included in any redistribution
 //#include "FreeSans12pt7b.h"
 //#include "FreeSans18pt7b.h"
 //#include "FreeSans24pt7b.h"
+#include "button.h"
 #include "addresses.h"
 
 // check that the source code has been modified
@@ -42,18 +43,23 @@ All text above, and the splash screen must be included in any redistribution
 #define BUTTON_C	D4
 #define OLED_RESET	D5
 #define BUTTON_MANUAL	D6
+#define LED_HEARTBEAT	D7
+
 
 // *** CONSTANTS ***
+
 #define ON 1
 #define OFF 0
 #define MAX_PAYLOAD_SIZE 100
-// SLOT_EXPIRY is in seconds
-#define SLOT_EXPIRY 5*60
+// SLOT_EXPIRY is in milliseconds
+#define SLOT_EXPIRY 5*60*1000
 // HEARTBEAT_PERIOD is in milliseconds
 #define HEARTBEAT_PERIOD 10*60*1000
+// LED_HEARTBEAT_PERIOD is half cycle in milliseconds
+#define LED_HEARTBEAT_PERIOD 250
 #define NO_EXPIRATION 0
-// KEEP_ALIVE is in seconds
-#define KEEP_ALIVE 60
+// KEEP_ALIVE is in milliseconds
+#define KEEP_ALIVE 10*60*1000
 #define MAX_TOPIC_LENGTH 30
 #define MAX_STRING_SIZE 32
 
@@ -77,66 +83,28 @@ String topic;
 char loopTopic[ MAX_TOPIC_LENGTH + 1];
 String status;
 char stringBuffer[ MAX_STRING_SIZE + 1];
-unsigned long  currentTime = 0;
-unsigned long  heartBeatDue = 0;
-unsigned long  timeUpdateDue = 0;
-int8_t pingCount = 0;
+unsigned long currentTime = 0;
+unsigned long heartbeatDue = 0;
+unsigned long timeUpdateDue = 0;
+unsigned long ledHeartbeatDue = 0;
+boolean ledHeartbeatState = false;
+
+//int8_t pingCount = 0;
 bool displayNeedsUpdating = false;
 
 // *** INTERFACE OBJECTS ***
 
-NtpTime ntptime;
+//NtpTime ntptime;
 //MQTT client( server, 1883, callback);
 //need initialization verions that include keep alive timer values
-MQTT client( server, 1883, KEEP_ALIVE, callback);
-
+MQTT mqttClient( server, 1883, KEEP_ALIVE, receiveMQTT);
+//
 //Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire, OLED_RESET);
 Adafruit_SSD1306 display (OLED_RESET);
+SerialLogHandler logHandler;
 
 
 //  *** CLASSES ***
-
-class Button {
-    public:
-        int8_t state = OFF;
-        int8_t pin = BUTTON_A;
-        String name = "A";
-
-        Button ( int8_t buttonPin, String buttonName) {
-          pin = buttonPin;
-          name = buttonName;
-          pinMode (pin, INPUT_PULLUP);
-        }
-
-        void checkButton() {
-            String topic;
-
-            if (digitalRead( pin) == LOW) {
-                if (state == OFF) {
-                    delay(20); // wait to debounce button
-                    if (digitalRead (pin) == LOW) {
-                        log( String( " Pressed: ") + name);
-                        topic = String( HOSTNAME) + String( "/") + String( name);
-                        topic.toCharArray(loopTopic, MAX_TOPIC_LENGTH);
-                        client.publish( loopTopic, "pressed");
-                        state = ON;
-                    }
-                }
-            } else {
-                if (state == ON) {
-                    delay(20); // wait to debounce button
-                    if (digitalRead (pin) == HIGH) {
-                        log( String( " Released: ") + name);
-                        topic = String( HOSTNAME) + String( "/") + String( name);
-                        topic.toCharArray(loopTopic, MAX_TOPIC_LENGTH);
-                        client.publish( loopTopic, "released");
-                        state = OFF;
-                    }
-                }
-            }
-        }
-};
-
 
 class Slot {
     public:
@@ -154,7 +122,7 @@ class Slot {
 
         Slot( String slotName, int8_t slotX, int8_t slotY, int8_t slotSize) {
            name = slotName;
-           topic = String( HOSTNAME) + String ("/") + String( name) + String( "/value");
+           topic = String( NODE_NAME) + String ("/") + String( name) + String( "/value");
            x = slotX;
            y = slotY;
            size = slotSize;
@@ -163,13 +131,13 @@ class Slot {
         void updateSlot( String slotString) {
             if (slotString.length() > 0) {
                 text = slotString;
-                log( String( "Set ") + name + String( " to: \"") + slotString + String ("\""));
+                Log.info( String( "Set ") + name + String( " to: \"") + slotString + String ("\""));
                 expiry = currentTime + SLOT_EXPIRY;
-                log( String( "Expiry set for ") + String( name) + String(" at ") + String( Time.format(expiry, "%I:%M:%S%p")));
+                Log.info( String( "Expiry set for ") + String( name) + String(" at ") + String( Time.format(expiry, "%I:%M:%S%p")));
             } else {
                 text = "";
                 expiry = NO_EXPIRATION;
-                log( String( "Set ") + name + String( " to: None"));
+                Log.info( String( "Set ") + name + String( " to: None"));
             }
         };
 
@@ -187,9 +155,9 @@ class Slot {
                 display.setTextColor(BLACK);
             }
             switch (source) {
-            case SOURCE_TIME:
-                hhmmss(ntptime.now()).toCharArray( stringBuffer, MAX_STRING_SIZE);
-                break;
+//            case SOURCE_TIME:
+//                hhmmss(ntptime.now()).toCharArray( stringBuffer, MAX_STRING_SIZE);
+//                break;
             case SOURCE_IP:
                 scratch = String (WiFi.localIP());
                 //String (localIP[0] + "." + localIP[1] + "." + localIP[2] + "." +
@@ -202,23 +170,23 @@ class Slot {
             case SOURCE_MQTT:
                 text.toCharArray( stringBuffer, MAX_STRING_SIZE);
                 break;
-            case SOURCE_PING:
-                scratch = String( "Ping: ") + String( pingCount);
-                scratch.toCharArray( stringBuffer, MAX_STRING_SIZE);
-                break;
+//            case SOURCE_PING:
+//                scratch = String( "Ping: ") + String( pingCount);
+//                scratch.toCharArray( stringBuffer, MAX_STRING_SIZE);
+//                break;
             default:
                 text.toCharArray( stringBuffer, MAX_STRING_SIZE);
                 break;
             }
             display.print( stringBuffer);
-            log( String( "Updating ") + name + String(": \"") + String(stringBuffer) + String( "\""));
+            Log.info( String( "Updating ") + name + String(": \"") + String(stringBuffer) + String( "\""));
         };
 
         bool checkSlotExpiration( unsigned long now) {
             // returns true if display needs updating
             if ( expiry != NO_EXPIRATION && now > expiry) {
                 text = "";
-                log( String("Expiring: ") + name);
+                Log.info( String("Expiring: ") + name);
                 expiry = NO_EXPIRATION;
                 return true;
             } else {
@@ -232,9 +200,9 @@ class Slot {
 
 // define button objects
 //            (pin, "name")
-Button buttonA (BUTTON_A, "buttonA");
-Button buttonB (BUTTON_B, "buttonB");
-Button buttonC (BUTTON_C, "buttonC");
+Button buttonA (BUTTON_A, BUTTON_A, "buttonA");
+Button buttonB (BUTTON_B, BUTTON_B, "buttonB");
+Button buttonC (BUTTON_C, BUTTON_C, "buttonC");
 
 
 // define slot objects
@@ -332,7 +300,7 @@ void colorSlot( int8_t slotNumber, int8_t color )
 uint16_t qos2messageid = 0;
 
 // MQTT receive message callback
-void callback(char* topic, byte* payload, unsigned int length) {
+void receiveMQTT(char* topic, byte* payload, unsigned int length) {
     char lastPayload [MAX_PAYLOAD_SIZE+1];
 
     // payload must be copied and the terminating null added
@@ -341,12 +309,12 @@ void callback(char* topic, byte* payload, unsigned int length) {
     }
     memcpy(lastPayload, payload, length);
     lastPayload[length] = '\0';
-    currentTime = Time.now();
+    currentTime = millis();
     String topicS = String( (const char*) topic);
     String payloadS = String( (const char*) lastPayload);
     displayNeedsUpdating = true;
 
-    log( String( "Received message topic: \"" + topicS + "\" payload: \"" + payloadS + "\""));
+    Log.info( String( "Received message topic: \"" + topicS + "\" payload: \"" + payloadS + "\""));
 
 /*
 want to have a switch case statement here to handle various options
@@ -368,20 +336,23 @@ node/normSlot	payload = textual slot number
     // update the slot according to the received topic with the received payload
 
 
-    if (topicS.compareTo( String( HOSTNAME) + String( "/timeSlot")) == 0) {
+    if (topicS.compareTo( String( NODE_NAME) + String( "/timeSlot")) == 0) {
         setSlot( payloadS.toInt(), SOURCE_TIME);
-    } else if (topicS.compareTo( String( HOSTNAME) + String( "/ipSlot")) == 0) {
+    } else if (topicS.compareTo( String( NODE_NAME) + String( "/ipSlot")) == 0) {
         setSlot( payloadS.toInt(), SOURCE_IP);
-    } else if (topicS.compareTo( String( HOSTNAME) + String( "/statSlot")) == 0) {
+    } else if (topicS.compareTo( String( NODE_NAME) + String( "/statSlot")) == 0) {
         setSlot( payloadS.toInt(), SOURCE_STATUS);
-    } else if (topicS.compareTo( String( HOSTNAME) + String( "/mqttSlot")) == 0) {
+    } else if (topicS.compareTo( String( NODE_NAME) + String( "/mqttSlot")) == 0) {
         setSlot( payloadS.toInt(), SOURCE_MQTT);
-    } else if (topicS.compareTo( String( HOSTNAME) + String( "/pingSlot")) == 0) {
-        setSlot( payloadS.toInt(), SOURCE_PING);
-    } else if (topicS.compareTo( String( HOSTNAME) + String( "/invSlot")) == 0) {
+//    } else if (topicS.compareTo( String( NODE_NAME) + String( "/pingSlot")) == 0) {
+//        setSlot( payloadS.toInt(), SOURCE_PING);
+    } else if (topicS.compareTo( String( NODE_NAME) + String( "/invSlot")) == 0) {
         colorSlot( payloadS.toInt(), COLOR_INVERSE);
-    } else if (topicS.compareTo( String( HOSTNAME) + String( "/normSlot")) == 0) {
+    } else if (topicS.compareTo( String( NODE_NAME) + String( "/normSlot")) == 0) {
         colorSlot( payloadS.toInt(), COLOR_NORMAL);
+    } else if (topicS.compareTo( String( NODE_NAME) + String( "/command/ping")) == 0) {
+        // schedule a heart beat for now
+        heartbeatDue = currentTime;
     } else if (topicS.compareTo( slot1.topic) == 0) {
         slot1.updateSlot( payloadS);
     } else if (topicS.compareTo( slot2.topic) == 0) {
@@ -403,18 +374,12 @@ node/normSlot	payload = textual slot number
 // QOS ack callback.
 // if application use QOS1 or QOS2, MQTT server sendback ack message id.
 void qoscallback(unsigned int messageid) {
-    log( String("Ack Message Id:" + messageid));
+    Log.info( String("Ack Message Id:" + messageid));
 
     if (messageid == qos2messageid) {
-        log( String("Release QoS2 Message" + messageid));
-        //client.publishRelease(qos2messageid);
+        Log.info( String("Release QoS2 Message" + messageid));
+        //mqttClient.publishRelease(qos2messageid);
     }
-}
-
-
-void log( String message) {
-    // send the message to the serial output, if enabled
-    Serial.println( hhmmss(ntptime.now()) + String(": ") + message);
 }
 
 
@@ -422,7 +387,7 @@ void updateDisplay() {
     // control the display here
     // slots are filled by subscribe call backs or local status data
 
-    log( String( "Updating display"));
+    Log.info( String( "Updating display"));
     display.clearDisplay(); // clear whatever is there.
 
     if (slot5.text.length() >0) {
@@ -491,30 +456,56 @@ void updateDST (unsigned long int now) {
   }
 }
 
-void sendHeartbeat() {
-    String topic;
 
-    log( String( " Heart beat"));
-    topic = String( HOSTNAME) + String( "/heatbeat");
-    topic.toCharArray(loopTopic, MAX_TOPIC_LENGTH);
-    client.publish( loopTopic, hhmmss(ntptime.now())); // may just want to send epoch
+void publish (String topic, String payload) {
+    #define BUFFER_LEN 100
+    char topicBuffer[BUFFER_LEN];
+    char payloadBuffer[BUFFER_LEN];
+    topic = String( NODE_NAME) + String( "/") + topic;
+    topic.toCharArray(topicBuffer, BUFFER_LEN);
+    payload.toCharArray(payloadBuffer, BUFFER_LEN);
+    mqttClient.publish( topicBuffer, payloadBuffer);
+    Log.trace( "MQTT: " + topic + ": " + payloadBuffer);
 }
 
 
+void sendHeartbeat() {
+    publish( "heartbeat", "");
+    String topic;
+}
 
-SYSTEM_MODE(MANUAL);
+
+void ledHeartbeat( unsigned long currentTime) {
+    //check on LED heartbeat
+    if (currentTime > ledHeartbeatDue) {
+        ledHeartbeatState = !ledHeartbeatState;
+        if (ledHeartbeatState) {
+            digitalWrite( LED_HEARTBEAT, HIGH);
+        } else {
+            digitalWrite( LED_HEARTBEAT, LOW);
+        }
+        ledHeartbeatDue = ledHeartbeatDue + LED_HEARTBEAT_PERIOD;
+    }
+}
+
+
+SYSTEM_MODE(MANUAL); // let the program decide when/if to communicate
+                     // with particle.io
+
+
 
 void setup() {
     status = "Starting up";
     Serial.begin(9600);
-    log("starting");
+    Log.info("starting");
 
     // set up network time synchronization
-    ntptime.start();
-    Time.zone(-5); //New York -5
-    Time.setDSTOffset(1);
+//    ntptime.start();
+//    Time.zone(-5); //New York -5
+//    Time.setDSTOffset(1);
 
-    pinMode (BUTTON_MANUAL, INPUT_PULLUP);
+    pinMode( BUTTON_MANUAL, INPUT_PULLUP);
+    pinMode( LED_HEARTBEAT, OUTPUT);
 
     // initialize display
     //display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS, true, true);  // initialize with the I2C addr 0x3D (for the 128x64)
@@ -526,12 +517,22 @@ void setup() {
     displayNeedsUpdating = false;
 
 
-    // initialize local slot control
-    setSlot(1, SOURCE_STATUS);
-    setSlot(2, SOURCE_PING);
-    setSlot(3, SOURCE_IP);
-    setSlot(4, SOURCE_TIME);
-    timeUpdateDue = millis(); // OK to be due out of the gate
+    // initialize local slot control local control
+//    setSlot(1, SOURCE_STATUS);
+//    setSlot(2, SOURCE_PING);
+//    setSlot(3, SOURCE_IP);
+//    setSlot(4, SOURCE_TIME);
+    // initialize local slot control remote access
+    setSlot(1, SOURCE_MQTT);
+    setSlot(2, SOURCE_MQTT);
+    setSlot(3, SOURCE_MQTT);
+    setSlot(4, SOURCE_MQTT);
+    // schedule timed events to happen immediately
+    currentTime = millis();
+    timeUpdateDue = currentTime;
+    heartbeatDue = currentTime;
+    ledHeartbeatDue = currentTime;
+    ledHeartbeatState = false;
 }
 
 
@@ -540,7 +541,7 @@ void subscribe (String topic) {
         char subscribeTopic[TOPIC_LEN];
 
         topic.toCharArray(subscribeTopic, TOPIC_LEN);
-        client.subscribe( subscribeTopic);
+        mqttClient.subscribe( subscribeTopic);
 }
 
 
@@ -551,9 +552,10 @@ void loop() {
     //WiFi.useDynamicIP();
     WiFi.connect();
     sendHeartbeat();
-    pingCount = WiFi.ping( google ); //hopefully this will time out eventually
+//    pingCount = WiFi.ping( google ); //hopefully this will time out eventually
   }
   status = "WiFi up";
+  currentTime = millis();
   if (digitalRead (BUTTON_MANUAL) == LOW) {
     Particle.connect();
   }
@@ -561,12 +563,11 @@ void loop() {
     Particle.process();
   }
 
-    if (millis() > timeUpdateDue) {
+    if (currentTime  > timeUpdateDue) {
         timeUpdateDue = timeUpdateDue + 1000; // don't accumulate error
-        updateDST( ntptime.now());
+//        updateDST( ntptime.now());
         displayNeedsUpdating = true;
-    }
-    currentTime = Time.now();
+     }
 
     displayNeedsUpdating |= slot1.checkSlotExpiration( currentTime);
     displayNeedsUpdating |= slot2.checkSlotExpiration( currentTime);
@@ -577,16 +578,18 @@ void loop() {
     displayNeedsUpdating |= slot7.checkSlotExpiration( currentTime);
 
     // check heartbeat due
-    if (millis() > heartBeatDue) {
+    if (currentTime > heartbeatDue) {
       sendHeartbeat();
-      pingCount = WiFi.ping( google ); //hopefully this will time out eventually
-      heartBeatDue = millis() + HEARTBEAT_PERIOD;
+//      pingCount = WiFi.ping( google ); //hopefully this will time out eventually
+      heartbeatDue = heartbeatDue + HEARTBEAT_PERIOD;
     }
 
+    ledHeartbeat( currentTime);
+
     // check buttons
-    buttonA.checkButton();
-    buttonB.checkButton();
-    buttonC.checkButton();
+    buttonA.check( currentTime);
+    buttonB.check( currentTime);
+    buttonC.check( currentTime);
 
     // check update display
     if ( displayNeedsUpdating) {
@@ -594,27 +597,27 @@ void loop() {
       updateDisplay();
     }
 
-    if (client.isConnected()) { // check on MQTT connection
+    if (mqttClient.isConnected()) { // check on MQTT connection
         status = "MQTT up";
-        client.loop();  // logically this is where callback and qoscallback are invoked
+        mqttClient.loop();  // logically this is where receiveMQTT and qoscallback are invoked
     } else {
         // connect to the server
         status = "MQTT connecting";
-        log( String( " Attempting to connect to MQTT broker again"));
-        client.connect(HOSTNAME);
+        Log.info( String( " Attempting to connect to MQTT broker again"));
+        mqttClient.connect(NODE_NAME);
         delay(1000);
 
         // subscribe to all slot values at once with wild card
-        subscribe( String ( HOSTNAME) + String( "/+/value"));
+        subscribe( String ( NODE_NAME) + String( "/+/value"));
         // subscribe to all messages addressed to node
-        //subscribe( String( HOSTNAME) + String( "/#"));
+        //subscribe( String( NODE_NAME) + String( "/#"));
 
-        subscribe( String ( HOSTNAME) + String( "/timeSlot"));
-        subscribe( String ( HOSTNAME) + String( "/ipSlot"));
-        subscribe( String ( HOSTNAME) + String( "/statSlot"));
-        subscribe( String ( HOSTNAME) + String( "/mqttSlot"));
-        subscribe( String ( HOSTNAME) + String( "/pingSlot"));
-        subscribe( String ( HOSTNAME) + String( "/invSlot"));
-        subscribe( String ( HOSTNAME) + String( "/normSlot"));
+        subscribe( String ( NODE_NAME) + String( "/timeSlot"));
+        subscribe( String ( NODE_NAME) + String( "/ipSlot"));
+        subscribe( String ( NODE_NAME) + String( "/statSlot"));
+        subscribe( String ( NODE_NAME) + String( "/mqttSlot"));
+//        subscribe( String ( NODE_NAME) + String( "/pingSlot"));
+        subscribe( String ( NODE_NAME) + String( "/invSlot"));
+        subscribe( String ( NODE_NAME) + String( "/normSlot"));
     }
 }
